@@ -15,7 +15,7 @@ You will need to run rsync with the `--stats` option since this exporter is pars
 You will also need to log to a file since the exporter is reading the file. So the command at a minimum would look like this:
 
 ```bash
-rsync --stats --quiet -avh /source /destination > /logs/rsync.log
+rsync --stats /source /destination > /logs/rsync.log
 ```
 
 
