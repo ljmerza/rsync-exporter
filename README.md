@@ -1,7 +1,7 @@
 # Overview
 
 ### Description
-rsync metrics exporter for **Prmoetheus.io**
+rsync metrics exporter for **Prometheus.io**
 
 ### Setup
 
