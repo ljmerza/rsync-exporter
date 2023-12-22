@@ -16,7 +16,7 @@ import (
 )
 
 var (
-	portPtr = 9150
+	port = 9150
 	rsyncFilePath = "/logs/rsync.log"
 )
 
@@ -44,7 +44,7 @@ var (
 
 func setupHTTPListener() error {
 	fmt.Println("Starting HTTP listener for Prometheus metrics...")
-	err := http.ListenAndServe(":"+strconv.Itoa(portPtr), promhttp.Handler())
+	err := http.ListenAndServe(":"+strconv.Itoa(port), promhttp.Handler())
 	if err != nil {
 			return fmt.Errorf("error starting HTTP server: %w", err)
 	}
