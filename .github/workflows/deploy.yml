@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - 'master'
-
 jobs:
   docker:
     runs-on: ubuntu-latest
@@ -25,4 +24,4 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           push: true
-          tags: lmerza/rsync-exporter:latest
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/${{ secrets.DOCKERHUB_REPO }}:latest
