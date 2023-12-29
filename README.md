@@ -21,9 +21,7 @@ rsync --stats /source /destination > /logs/rsync.log
 
 ```yaml
 rsync_exporter:
-    build:
-      context: ./projects/rsync-prometheus-exporter
-      dockerfile: Dockerfile
+    image: lmerza/rsync-exporter:latest
     container_name: rsync_exporter
     restart: unless-stopped
     ports:
