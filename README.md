@@ -54,3 +54,22 @@ rsync_bytes_sent_total | Total bytes sent
 rsync_bytes_received_total | Total bytes received
 rsync_total_size | Total size of files to be transferred
 rsync_last_sync | Last sync time
+rsync_last_sync_valid | Is last sync time is valid
+
+
+### Alerts
+
+```yaml
+groups:
+  - name: Server Alerts
+    rules:
+      # Alert if rsync sync hasnt happened within 24 hours
+      - alert: Server Rsync Stale
+        expr: |
+          (time() - (rsync_last_sync / 1000) > 86400) and (rsync_last_sync_valid == 1)
+        labels:
+          severity: critical
+        annotations:
+          summary: "Rsync sync is stale"
+          description: "The last rsync sync is more than 24 hours old."
+```

@@ -40,7 +40,13 @@ var (
 		Name: "rsync_last_sync",
 		Help: "Last rsync sync time",
 	})
+
+	lastRsyncExecutionTimeValid = promauto.NewGauge(prometheus.GaugeOpts{
+    Name: "rsync_last_sync_valid",
+    Help: "Indicates if the last rsync sync time is valid",
+	})
 )
+
 
 func setupHTTPListener() error {
 	fmt.Println("Starting HTTP listener for Prometheus metrics...")
@@ -92,6 +98,7 @@ func parseLogLine(logLine string) {
 
 			fmt.Printf("Setting last sync time to %d\n", time.Now().UnixNano() / 1e6)
 			lastRsyncExecutionTime.Set(float64(time.Now().UnixNano()) / 1e6)
+			lastRsyncExecutionTimeValid.Set(1)
 	}
 }
 
