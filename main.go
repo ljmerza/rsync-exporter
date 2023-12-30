@@ -96,8 +96,9 @@ func parseLogLine(logLine string) {
 			fmt.Printf("Total size bytes: %f\n", totalSizeBytes)
 			totalSizeGauge.Set(totalSizeBytes)
 
-			fmt.Printf("Setting last sync time to %d\n", time.Now().UnixNano() / 1e6)
-			lastRsyncExecutionTime.Set(float64(time.Now().UnixNano()) / 1e6)
+			currentTimeMillis := float64(time.Now().UnixNano()) / 1e6
+			fmt.Printf("Setting last sync time to %f\n", currentTimeMillis)
+			lastRsyncExecutionTime.Set(currentTimeMillis)
 			lastRsyncExecutionTimeValid.Set(1)
 	}
 }
