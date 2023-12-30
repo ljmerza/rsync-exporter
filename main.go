@@ -22,7 +22,7 @@ var (
 
 var (
 	bytesSentCounter = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "rsync_bytes_sent_total_bytes",
+		Name: "rsync_sent_total_bytes",
 		Help: "Total bytes sentin bytes",
 	})
 
