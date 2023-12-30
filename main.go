@@ -22,18 +22,18 @@ var (
 
 var (
 	bytesSentCounter = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "rsync_bytes_sent_total",
-		Help: "Total bytes sent",
+		Name: "rsync_bytes_sent_total_bytes",
+		Help: "Total bytes sentin bytes",
 	})
 
 	bytesReceivedCounter = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "rsync_bytes_received_total",
-		Help: "Total bytes received",
+		Name: "rsync_received_total_bytes",
+		Help: "Total bytes received in bytes",
 	})
 
 	totalSizeGauge = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "rsync_total_size",
-		Help: "Total size synced",
+		Name: "rsync_total_size_bytes",
+		Help: "Total size syncedin bytes",
 	})
 
 	lastRsyncExecutionTime = promauto.NewGauge(prometheus.GaugeOpts{

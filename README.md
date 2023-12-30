@@ -48,9 +48,9 @@ Since you are logging to a file, you can use logrotate to manage the file size.
 
 | Metric | Description |
 | ------ | ----------- |
-rsync_bytes_sent_total | Total bytes sent
-rsync_bytes_received_total | Total bytes received
-rsync_total_size | Total size of files to be transferred
+rsync_bytes_sent_total_bytes | Total bytes sent in bytes
+rsync_received_total_bytes | Total bytes received in bytes
+rsync_total_size_bytes | Total size of files transferred in bytes
 rsync_last_sync | Last sync time
 rsync_last_sync_valid | Is last sync time is valid
 
