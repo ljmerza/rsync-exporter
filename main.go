@@ -2,10 +2,11 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -62,6 +63,69 @@ var (
 	})
 )
 
+func parseBytesToken(token string) (float64, error) {
+	cleaned := strings.TrimSpace(token)
+	cleaned = strings.Trim(cleaned, ",")
+	cleaned = strings.ReplaceAll(cleaned, ",", "")
+	if cleaned == "" {
+		return 0, fmt.Errorf("empty token")
+	}
+
+	type unitDef struct {
+		multiplier float64
+		suffixes   []string
+	}
+
+	units := []unitDef{
+		{multiplier: 1024, suffixes: []string{"KIB", "KI", "KB", "K"}},
+		{multiplier: 1024 * 1024, suffixes: []string{"MIB", "MI", "MB", "M"}},
+		{multiplier: 1024 * 1024 * 1024, suffixes: []string{"GIB", "GI", "GB", "G"}},
+		{multiplier: 1024 * 1024 * 1024 * 1024, suffixes: []string{"TIB", "TI", "TB", "T"}},
+	}
+
+	multiplier := 1.0
+	upper := strings.ToUpper(cleaned)
+
+	for _, unit := range units {
+		for _, suffix := range unit.suffixes {
+			if strings.HasSuffix(upper, suffix) {
+				cut := len(cleaned) - len(suffix)
+				if cut < 0 {
+					cut = 0
+				}
+				cleaned = cleaned[:cut]
+				upper = upper[:cut]
+				multiplier = unit.multiplier
+				break
+			}
+		}
+		if multiplier != 1.0 {
+			break
+		}
+	}
+
+	if strings.HasSuffix(upper, "B") {
+		cut := len(cleaned) - 1
+		if cut < 0 {
+			cut = 0
+		}
+		cleaned = cleaned[:cut]
+		upper = upper[:cut]
+	}
+
+	cleaned = strings.TrimSpace(cleaned)
+	if cleaned == "" {
+		return 0, fmt.Errorf("no numeric value in token")
+	}
+
+	value, err := strconv.ParseFloat(cleaned, 64)
+	if err != nil {
+		return 0, err
+	}
+
+	return value * multiplier, nil
+}
+
 func setupHTTPListener() error {
 	fmt.Println("Starting HTTP listener for Prometheus metrics...")
 	err := http.ListenAndServe(":"+strconv.Itoa(port), promhttp.Handler())
@@ -72,81 +136,170 @@ func setupHTTPListener() error {
 }
 
 func parseLogLine(logLine string) {
-	parts := strings.Fields(logLine)
-
-	if len(parts) == 0 {
+	tokens := strings.Fields(logLine)
+	if len(tokens) == 0 {
 		return
 	}
 
-	// Check if the line contains "sent" and "received" information
-	if len(parts) >= 8 && parts[3] == "sent" && parts[6] == "received" {
-		sentBytes, err := strconv.ParseFloat(strings.ReplaceAll(parts[4], ",", ""), 64)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error parsing sent bytes: %v\n", err)
-			return
+	for idx := 0; idx < len(tokens); idx++ {
+		switch tokens[idx] {
+		case "sent":
+			if idx+1 >= len(tokens) {
+				continue
+			}
+
+			value, err := parseBytesToken(tokens[idx+1])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error parsing sent bytes: %v\n", err)
+				continue
+			}
+
+			fmt.Printf("Sent bytes: %f\n", value)
+			bytesSentGauge.Set(value)
+
+		case "received":
+			if idx+1 >= len(tokens) {
+				continue
+			}
+
+			value, err := parseBytesToken(tokens[idx+1])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error parsing received bytes: %v\n", err)
+				continue
+			}
+
+			fmt.Printf("Received bytes: %f\n", value)
+			bytesReceivedGauge.Set(value)
+
+		case "total":
+			if idx+1 >= len(tokens) || tokens[idx+1] != "size" {
+				continue
+			}
+
+			valueIdx := idx + 2
+			if valueIdx < len(tokens) && tokens[valueIdx] == "is" {
+				valueIdx++
+			}
+
+			if valueIdx >= len(tokens) {
+				continue
+			}
+
+			value, err := parseBytesToken(tokens[valueIdx])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error parsing total size bytes: %v\n", err)
+				lastRsyncExecutionTimeValid.Set(0)
+				continue
+			}
+
+			fmt.Printf("Total size bytes: %f\n", value)
+			totalSizeGauge.Set(value)
+
+			currentTimeSeconds := float64(time.Now().Unix())
+			fmt.Printf("Setting last sync time to %f\n", currentTimeSeconds)
+			lastRsyncExecutionTime.Set(currentTimeSeconds)
+			lastRsyncExecutionTimeValid.Set(1)
 		}
-
-		fmt.Printf("Sent bytes: %f\n", sentBytes)
-		bytesSentGauge.Set(sentBytes)
-
-		receivedBytes, err := strconv.ParseFloat(strings.ReplaceAll(parts[7], ",", ""), 64)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error parsing received bytes: %v\n", err)
-			return
-		}
-
-		fmt.Printf("Received bytes: %f\n", receivedBytes)
-		bytesReceivedGauge.Set(receivedBytes)
 	}
 
-	// Check if the line contains "total size" information
-	if len(parts) >= 7 && parts[3] == "total" && parts[4] == "size" {
-		totalSizeBytes, err := strconv.ParseFloat(strings.ReplaceAll(parts[6], ",", ""), 64)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error parsing total size bytes: %v\n", err)
-			lastRsyncExecutionTimeValid.Set(0)
-			return
-		}
-
-		fmt.Printf("Total size bytes: %f\n", totalSizeBytes)
-		totalSizeGauge.Set(totalSizeBytes)
-
-		currentTimeMillis := float64(time.Now().UnixNano()) / 1e6
-		fmt.Printf("Setting last sync time to %f\n", currentTimeMillis)
-		lastRsyncExecutionTime.Set(currentTimeMillis)
-		lastRsyncExecutionTimeValid.Set(1)
-	}
 }
 
 func tailLogFile(filePath string) error {
 	fmt.Printf("Attempting to tail log file: %s\n", filePath)
-	cmd := exec.Command("tail", "-F", "-n", "0", filePath)
 
-	cmdReader, err := cmd.StdoutPipe()
+	file, err := os.Open(filePath)
 	if err != nil {
-		return fmt.Errorf("error creating StdoutPipe for tail: %w", err)
+		return fmt.Errorf("error opening log file: %w", err)
+	}
+	defer func() {
+		if file != nil {
+			if err := file.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "error closing log file handle: %v\n", err)
+			}
+		}
+	}()
+
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("error stating log file: %w", err)
 	}
 
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("error starting tail: %w", err)
+	if _, err := file.Seek(0, io.SeekEnd); err != nil {
+		return fmt.Errorf("error seeking log file: %w", err)
 	}
 
 	fmt.Println("Successfully started tailing log file.")
 
-	scanner := bufio.NewScanner(cmdReader)
-	for scanner.Scan() {
-		parseLogLine(scanner.Text())
-	}
+	reader := bufio.NewReader(file)
+	var pending string
 
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("tail scanner error: %w", err)
-	}
+	for {
+		chunk, readErr := reader.ReadString('\n')
+		if len(chunk) > 0 {
+			pending += chunk
 
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("tail process exited: %w", err)
-	}
+			for {
+				newlineIdx := strings.IndexByte(pending, '\n')
+				if newlineIdx == -1 {
+					break
+				}
 
-	return fmt.Errorf("tail process exited without error")
+				line := strings.TrimRight(pending[:newlineIdx], "\r")
+				if line != "" {
+					parseLogLine(line)
+				}
+				pending = pending[newlineIdx+1:]
+			}
+		}
+
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				time.Sleep(500 * time.Millisecond)
+
+				newInfo, statErr := os.Stat(filePath)
+				if statErr != nil {
+					if os.IsNotExist(statErr) {
+						continue
+					}
+					return fmt.Errorf("error stating log file: %w", statErr)
+				}
+
+				if !os.SameFile(fileInfo, newInfo) {
+					if err := file.Close(); err != nil {
+						fmt.Fprintf(os.Stderr, "error closing old log file handle: %v\n", err)
+					}
+					file = nil
+
+					reopened, openErr := os.Open(filePath)
+					if openErr != nil {
+						return fmt.Errorf("error reopening rotated log file: %w", openErr)
+					}
+
+					file = reopened
+					reader.Reset(file)
+					fileInfo = newInfo
+					pending = ""
+				} else {
+					currentOffset, seekErr := file.Seek(0, io.SeekCurrent)
+					if seekErr != nil {
+						return fmt.Errorf("error checking current offset: %w", seekErr)
+					}
+
+					if currentOffset > newInfo.Size() {
+						if _, err := file.Seek(0, io.SeekStart); err != nil {
+							return fmt.Errorf("error seeking after truncation: %w", err)
+						}
+						reader.Reset(file)
+						pending = ""
+					}
+				}
+
+				continue
+			}
+
+			return fmt.Errorf("log reader error: %w", readErr)
+		}
+	}
 }
 
 func main() {

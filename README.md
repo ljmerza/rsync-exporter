@@ -48,11 +48,11 @@ Since you are logging to a file, you can use logrotate to manage the file size.
 
 | Metric | Description |
 | ------ | ----------- |
-rsync_sent_total_bytes | Total bytes sent in bytes
-rsync_received_total_bytes | Total bytes received in bytes
-rsync_total_size_bytes | Total size of files transferred in bytes
-rsync_last_sync | Last sync time
-rsync_last_sync_valid | Is last sync time is valid
+| rsync_last_sent_bytes | Bytes sent during the most recent rsync run |
+| rsync_last_received_bytes | Bytes received during the most recent rsync run |
+| rsync_last_total_size_bytes | Total size of files transferred in bytes |
+| rsync_last_sync | UNIX timestamp (seconds) of the last successful stats parse |
+| rsync_last_sync_valid | Indicator (1/0) showing whether `rsync_last_sync` is valid |
 
 
 ### Alerts
@@ -64,7 +64,7 @@ groups:
       # Alert if rsync sync hasnt happened within 24 hours
       - alert: Server Rsync Stale
         expr: |
-          (time() - (rsync_last_sync / 1000) > 86400) and (rsync_last_sync_valid == 1)
+          (time() - rsync_last_sync > 86400) and (rsync_last_sync_valid == 1)
         labels:
           severity: critical
         annotations:
