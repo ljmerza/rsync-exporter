@@ -1,9 +1,11 @@
-FROM golang:1.19.2-bullseye
+FROM golang:1.19.2-bullseye AS builder
 
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY *.go ./
-RUN go build -o /exporter
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /exporter
 
-CMD ["/exporter"]
+FROM gcr.io/distroless/static-debian11
+COPY --from=builder /exporter /exporter
+ENTRYPOINT ["/exporter"]

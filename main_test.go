@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"math"
+	"net/http"
 	"testing"
 	"time"
 
@@ -90,5 +92,88 @@ func TestParseLogLineTotalSizeInvalid(t *testing.T) {
 	valid := testutil.ToFloat64(lastRsyncExecutionTimeValid)
 	if valid != 0 {
 		t.Fatalf("lastRsyncExecutionTimeValid = %f, want 0 after invalid parse", valid)
+	}
+}
+
+func TestParseBytesTokenNegative(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"negative number", "-100"},
+		{"negative with suffix", "-5K"},
+		{"negative decimal", "-1.5M"},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseBytesToken(tc.input)
+			if err == nil {
+				t.Fatalf("parseBytesToken(%q) expected error for negative value, got nil", tc.input)
+			}
+		})
+	}
+}
+
+func TestHealthEndpoint(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+
+	// Use a different port to avoid conflicts
+	originalPort := port
+	port = 19150
+	defer func() { port = originalPort }()
+
+	go setupHTTPListener(ctx, errCh)
+
+	// Wait for server to start
+	time.Sleep(100 * time.Millisecond)
+
+	resp, err := http.Get("http://localhost:19150/health")
+	if err != nil {
+		t.Fatalf("failed to GET /health: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/health returned status %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+func TestReadyEndpoint(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+
+	originalPort := port
+	port = 19151
+	defer func() { port = originalPort }()
+
+	go setupHTTPListener(ctx, errCh)
+
+	time.Sleep(100 * time.Millisecond)
+
+	resp, err := http.Get("http://localhost:19151/ready")
+	if err != nil {
+		t.Fatalf("failed to GET /ready: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/ready returned status %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+func BenchmarkParseBytesToken(b *testing.B) {
+	inputs := []string{"39,889,034,403", "5.5K", "1.25MiB", "2.5G", "100B"}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, input := range inputs {
+			parseBytesToken(input)
+		}
 	}
 }
