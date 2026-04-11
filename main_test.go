@@ -4,6 +4,8 @@ import (
 	"context"
 	"math"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -39,14 +41,14 @@ func TestParseBytesToken(t *testing.T) {
 }
 
 func TestParseLogLineSentReceived(t *testing.T) {
-	bytesSentGauge.Set(0)
-	bytesReceivedGauge.Set(0)
+	bytesSentGauge.WithLabelValues("test_job").Set(0)
+	bytesReceivedGauge.WithLabelValues("test_job").Set(0)
 
 	line := "2023/12/22 01:18:25 [2224747] sent 39,889,034,403 bytes  received 5,146,208 bytes  70,546,738.48 bytes/sec"
-	parseLogLine(line)
+	parseLogLine(line, "test_job")
 
-	sent := testutil.ToFloat64(bytesSentGauge)
-	received := testutil.ToFloat64(bytesReceivedGauge)
+	sent := testutil.ToFloat64(bytesSentGauge.WithLabelValues("test_job"))
+	received := testutil.ToFloat64(bytesReceivedGauge.WithLabelValues("test_job"))
 
 	if math.Abs(sent-39889034403) > 1 {
 		t.Fatalf("sent gauge = %f, want 39889034403", sent)
@@ -58,21 +60,21 @@ func TestParseLogLineSentReceived(t *testing.T) {
 }
 
 func TestParseLogLineTotalSize(t *testing.T) {
-	totalSizeGauge.Set(0)
-	lastRsyncExecutionTime.Set(0)
-	lastRsyncExecutionTimeValid.Set(0)
+	totalSizeGauge.WithLabelValues("test_job").Set(0)
+	lastRsyncExecutionTime.WithLabelValues("test_job").Set(0)
+	lastRsyncExecutionTimeValid.WithLabelValues("test_job").Set(0)
 
 	before := float64(time.Now().Unix())
 	line := "2023/12/22 01:18:25 [2224747] total size is 199.5GiB  speedup is 4.99"
-	parseLogLine(line)
+	parseLogLine(line, "test_job")
 
-	total := testutil.ToFloat64(totalSizeGauge)
+	total := testutil.ToFloat64(totalSizeGauge.WithLabelValues("test_job"))
 	if math.Abs(total-(199.5*1024*1024*1024)) > 1024 {
 		t.Fatalf("total size gauge = %f, want approx %f", total, 199.5*1024*1024*1024)
 	}
 
-	lastSync := testutil.ToFloat64(lastRsyncExecutionTime)
-	valid := testutil.ToFloat64(lastRsyncExecutionTimeValid)
+	lastSync := testutil.ToFloat64(lastRsyncExecutionTime.WithLabelValues("test_job"))
+	valid := testutil.ToFloat64(lastRsyncExecutionTimeValid.WithLabelValues("test_job"))
 
 	after := float64(time.Now().Unix())
 	if lastSync < before || lastSync > after+1 {
@@ -85,11 +87,11 @@ func TestParseLogLineTotalSize(t *testing.T) {
 }
 
 func TestParseLogLineTotalSizeInvalid(t *testing.T) {
-	lastRsyncExecutionTimeValid.Set(1)
+	lastRsyncExecutionTimeValid.WithLabelValues("test_job").Set(1)
 	line := "2023/12/22 01:18:25 [2224747] total size is invalid_data  speedup is 4.99"
-	parseLogLine(line)
+	parseLogLine(line, "test_job")
 
-	valid := testutil.ToFloat64(lastRsyncExecutionTimeValid)
+	valid := testutil.ToFloat64(lastRsyncExecutionTimeValid.WithLabelValues("test_job"))
 	if valid != 0 {
 		t.Fatalf("lastRsyncExecutionTimeValid = %f, want 0 after invalid parse", valid)
 	}
@@ -113,6 +115,106 @@ func TestParseBytesTokenNegative(t *testing.T) {
 				t.Fatalf("parseBytesToken(%q) expected error for negative value, got nil", tc.input)
 			}
 		})
+	}
+}
+
+func TestMultipleJobsIndependent(t *testing.T) {
+	// Parse stats for job "alpha"
+	bytesSentGauge.WithLabelValues("alpha").Set(0)
+	bytesSentGauge.WithLabelValues("beta").Set(0)
+
+	parseLogLine("sent 1,000 bytes  received 500 bytes  1,500.00 bytes/sec", "alpha")
+	parseLogLine("sent 9,999 bytes  received 8,888 bytes  18,887.00 bytes/sec", "beta")
+
+	sentAlpha := testutil.ToFloat64(bytesSentGauge.WithLabelValues("alpha"))
+	sentBeta := testutil.ToFloat64(bytesSentGauge.WithLabelValues("beta"))
+
+	if math.Abs(sentAlpha-1000) > 1 {
+		t.Fatalf("alpha sent = %f, want 1000", sentAlpha)
+	}
+	if math.Abs(sentBeta-9999) > 1 {
+		t.Fatalf("beta sent = %f, want 9999", sentBeta)
+	}
+
+	// Verify updating one job doesn't affect the other
+	parseLogLine("sent 2,000 bytes  received 100 bytes  2,100.00 bytes/sec", "alpha")
+	sentAlpha = testutil.ToFloat64(bytesSentGauge.WithLabelValues("alpha"))
+	sentBeta = testutil.ToFloat64(bytesSentGauge.WithLabelValues("beta"))
+
+	if math.Abs(sentAlpha-2000) > 1 {
+		t.Fatalf("alpha sent after update = %f, want 2000", sentAlpha)
+	}
+	if math.Abs(sentBeta-9999) > 1 {
+		t.Fatalf("beta sent should be unchanged = %f, want 9999", sentBeta)
+	}
+}
+
+func TestJobNameFromPath(t *testing.T) {
+	tests := []struct {
+		path     string
+		expected string
+	}{
+		{"/logs/gym_to_z2.log", "gym_to_z2"},
+		{"/logs/rsync.log", "rsync"},
+		{"crawlspace_to_z2.log", "crawlspace_to_z2"},
+		{"/some/deep/path/docker_to_shed.log", "docker_to_shed"},
+		{"noext", "noext"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.path, func(t *testing.T) {
+			got := jobNameFromPath(tc.path)
+			if got != tc.expected {
+				t.Fatalf("jobNameFromPath(%q) = %q, want %q", tc.path, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestScanLogDir(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create some .log files and a non-log file
+	for _, name := range []string{"gym.log", "shed.log", "notes.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("test"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Create a subdirectory named something.log to ensure it's skipped
+	if err := os.Mkdir(filepath.Join(dir, "subdir.log"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	paths, err := scanLogDir(dir)
+	if err != nil {
+		t.Fatalf("scanLogDir error: %v", err)
+	}
+
+	if len(paths) != 2 {
+		t.Fatalf("expected 2 log files, got %d: %v", len(paths), paths)
+	}
+
+	names := make(map[string]bool)
+	for _, p := range paths {
+		names[filepath.Base(p)] = true
+	}
+
+	if !names["gym.log"] || !names["shed.log"] {
+		t.Fatalf("expected gym.log and shed.log, got %v", names)
+	}
+}
+
+func TestScanLogDirEmpty(t *testing.T) {
+	dir := t.TempDir()
+
+	paths, err := scanLogDir(dir)
+	if err != nil {
+		t.Fatalf("scanLogDir error: %v", err)
+	}
+
+	if len(paths) != 0 {
+		t.Fatalf("expected 0 log files, got %d", len(paths))
 	}
 }
 

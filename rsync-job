@@ -1,0 +1,31 @@
+#!/bin/bash
+# rsync-job: wrapper for rsync cron jobs that writes stats to exporter-compatible log files
+# Usage: rsync-job <job-name> <rsync-args...>
+# Example: rsync-job gym_to_z2 -azh --delete cubxi@192.168.1.186:/home/cubxi/docker/ /media/cubxi/plex/backup/computers/gym
+#
+# The wrapper adds --stats and redirects output to a job-specific log file
+# that the rsync-exporter container reads for Prometheus metrics.
+
+set -euo pipefail
+
+if [ $# -lt 2 ]; then
+    echo "Usage: rsync-job <job-name> <rsync-args...>" >&2
+    exit 1
+fi
+
+JOB_NAME="$1"
+shift
+
+LOG_DIR="/media/cubxi/docker/volumes/rsync_exporter"
+LOG_FILE="${LOG_DIR}/${JOB_NAME}.log"
+
+# Overwrite (>) so the exporter detects truncation and re-reads fresh stats.
+# Using --stats without -v keeps output to ~15 lines (just the summary).
+rsync --stats "$@" > "$LOG_FILE" 2>&1
+EXIT_CODE=$?
+
+# Exit code 24 = "vanished files" — normal for live Docker volumes
+if [ $EXIT_CODE -ne 0 ] && [ $EXIT_CODE -ne 24 ]; then
+    echo "rsync-job ${JOB_NAME} failed with exit code ${EXIT_CODE}" >&2
+    exit $EXIT_CODE
+fi

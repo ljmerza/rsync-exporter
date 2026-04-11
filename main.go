@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -22,6 +24,7 @@ import (
 var (
 	port          = 9150
 	rsyncFilePath = "/logs/rsync.log"
+	rsyncLogDir   = ""
 	debug         = false
 )
 
@@ -49,7 +52,9 @@ func init() {
 		}
 	}
 
-	if pathEnv := os.Getenv("RSYNC_LOG_PATH"); pathEnv != "" {
+	if dirEnv := os.Getenv("RSYNC_LOG_DIR"); dirEnv != "" {
+		rsyncLogDir = dirEnv
+	} else if pathEnv := os.Getenv("RSYNC_LOG_PATH"); pathEnv != "" {
 		rsyncFilePath = pathEnv
 	}
 
@@ -60,30 +65,30 @@ func init() {
 }
 
 var (
-	bytesSentGauge = promauto.NewGauge(prometheus.GaugeOpts{
+	bytesSentGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rsync_last_sent_bytes",
 		Help: "Bytes sent during the most recent rsync run",
-	})
+	}, []string{"rsync_job"})
 
-	bytesReceivedGauge = promauto.NewGauge(prometheus.GaugeOpts{
+	bytesReceivedGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rsync_last_received_bytes",
 		Help: "Bytes received during the most recent rsync run",
-	})
+	}, []string{"rsync_job"})
 
-	totalSizeGauge = promauto.NewGauge(prometheus.GaugeOpts{
+	totalSizeGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rsync_last_total_size_bytes",
 		Help: "Total size synced during the most recent rsync run",
-	})
+	}, []string{"rsync_job"})
 
-	lastRsyncExecutionTime = promauto.NewGauge(prometheus.GaugeOpts{
+	lastRsyncExecutionTime = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rsync_last_sync",
 		Help: "Last rsync sync time",
-	})
+	}, []string{"rsync_job"})
 
-	lastRsyncExecutionTimeValid = promauto.NewGauge(prometheus.GaugeOpts{
+	lastRsyncExecutionTimeValid = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rsync_last_sync_valid",
 		Help: "Indicates if the last rsync sync time is valid",
-	})
+	}, []string{"rsync_job"})
 )
 
 // debugf prints a message only when debug mode is enabled
@@ -181,7 +186,7 @@ func setupHTTPListener(ctx context.Context, errCh chan<- error) {
 	}
 }
 
-func parseLogLine(logLine string) {
+func parseLogLine(logLine string, jobName string) {
 	tokens := strings.Fields(logLine)
 	if len(tokens) == 0 {
 		return
@@ -200,8 +205,8 @@ func parseLogLine(logLine string) {
 				continue
 			}
 
-			debugf("Sent bytes: %f\n", value)
-			bytesSentGauge.Set(value)
+			debugf("[%s] Sent bytes: %f\n", jobName, value)
+			bytesSentGauge.WithLabelValues(jobName).Set(value)
 
 		case "received":
 			if idx+1 >= len(tokens) {
@@ -214,8 +219,8 @@ func parseLogLine(logLine string) {
 				continue
 			}
 
-			debugf("Received bytes: %f\n", value)
-			bytesReceivedGauge.Set(value)
+			debugf("[%s] Received bytes: %f\n", jobName, value)
+			bytesReceivedGauge.WithLabelValues(jobName).Set(value)
 
 		case "total":
 			if idx+1 >= len(tokens) || tokens[idx+1] != "size" {
@@ -234,24 +239,23 @@ func parseLogLine(logLine string) {
 			value, err := parseBytesToken(tokens[valueIdx])
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error parsing total size bytes: %v\n", err)
-				lastRsyncExecutionTimeValid.Set(0)
+				lastRsyncExecutionTimeValid.WithLabelValues(jobName).Set(0)
 				continue
 			}
 
-			debugf("Total size bytes: %f\n", value)
-			totalSizeGauge.Set(value)
+			debugf("[%s] Total size bytes: %f\n", jobName, value)
+			totalSizeGauge.WithLabelValues(jobName).Set(value)
 
 			currentTimeSeconds := float64(time.Now().Unix())
-			debugf("Setting last sync time to %f\n", currentTimeSeconds)
-			lastRsyncExecutionTime.Set(currentTimeSeconds)
-			lastRsyncExecutionTimeValid.Set(1)
+			debugf("[%s] Setting last sync time to %f\n", jobName, currentTimeSeconds)
+			lastRsyncExecutionTime.WithLabelValues(jobName).Set(currentTimeSeconds)
+			lastRsyncExecutionTimeValid.WithLabelValues(jobName).Set(1)
 		}
 	}
-
 }
 
-func tailLogFile(ctx context.Context, filePath string) error {
-	debugf("Attempting to tail log file: %s\n", filePath)
+func tailLogFile(ctx context.Context, filePath string, jobName string, fromStart bool) error {
+	debugf("Attempting to tail log file: %s (job: %s)\n", filePath, jobName)
 
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -270,11 +274,13 @@ func tailLogFile(ctx context.Context, filePath string) error {
 		return fmt.Errorf("error stating log file: %w", err)
 	}
 
-	if _, err := file.Seek(0, io.SeekEnd); err != nil {
-		return fmt.Errorf("error seeking log file: %w", err)
+	if !fromStart {
+		if _, err := file.Seek(0, io.SeekEnd); err != nil {
+			return fmt.Errorf("error seeking log file: %w", err)
+		}
 	}
 
-	fmt.Println("Successfully started tailing log file.")
+	fmt.Printf("Successfully started tailing log file: %s (job: %s)\n", filePath, jobName)
 
 	reader := bufio.NewReader(file)
 	var pending string
@@ -298,7 +304,7 @@ func tailLogFile(ctx context.Context, filePath string) error {
 
 				line := strings.TrimRight(pending[:newlineIdx], "\r")
 				if line != "" {
-					parseLogLine(line)
+					parseLogLine(line, jobName)
 				}
 				pending = pending[newlineIdx+1:]
 			}
@@ -311,7 +317,6 @@ func tailLogFile(ctx context.Context, filePath string) error {
 				newInfo, statErr := os.Stat(filePath)
 				if statErr != nil {
 					if os.IsNotExist(statErr) {
-						// File was deleted - close old handle and wait for it to reappear
 						if file != nil {
 							if err := file.Close(); err != nil {
 								fmt.Fprintf(os.Stderr, "error closing deleted log file handle: %v\n", err)
@@ -319,7 +324,6 @@ func tailLogFile(ctx context.Context, filePath string) error {
 							file = nil
 						}
 
-						// Wait for file to reappear
 						for {
 							select {
 							case <-ctx.Done():
@@ -336,7 +340,6 @@ func tailLogFile(ctx context.Context, filePath string) error {
 							}
 						}
 
-						// Reopen the file
 						reopened, openErr := os.Open(filePath)
 						if openErr != nil {
 							return fmt.Errorf("error reopening log file after deletion: %w", openErr)
@@ -392,11 +395,175 @@ func tailLogFile(ctx context.Context, filePath string) error {
 	}
 }
 
+// jobNameFromPath extracts the job name from a log file path by stripping the directory and .log extension.
+func jobNameFromPath(filePath string) string {
+	base := filepath.Base(filePath)
+	return strings.TrimSuffix(base, ".log")
+}
+
+// scanLogDir returns all .log file paths in the given directory.
+func scanLogDir(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("error reading log directory: %w", err)
+	}
+
+	var paths []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if strings.HasSuffix(strings.ToLower(entry.Name()), ".log") {
+			paths = append(paths, filepath.Join(dir, entry.Name()))
+		}
+	}
+	return paths, nil
+}
+
+type jobWatcher struct {
+	cancel context.CancelFunc
+}
+
+// watchDirectory scans for .log files and manages a tail goroutine per file.
+// It rescans every 30 seconds to pick up new files or clean up removed ones.
+func watchDirectory(ctx context.Context, dir string) {
+	var mu sync.Mutex
+	watchers := make(map[string]*jobWatcher) // keyed by file path
+
+	startWatcher := func(filePath string) {
+		jobName := jobNameFromPath(filePath)
+		watchCtx, watchCancel := context.WithCancel(ctx)
+
+		mu.Lock()
+		watchers[filePath] = &jobWatcher{cancel: watchCancel}
+		mu.Unlock()
+
+		go func() {
+			defer func() {
+				mu.Lock()
+				delete(watchers, filePath)
+				mu.Unlock()
+			}()
+
+			for {
+				select {
+				case <-watchCtx.Done():
+					return
+				default:
+				}
+
+				if err := tailLogFile(watchCtx, filePath, jobName, true); err != nil {
+					if errors.Is(err, context.Canceled) {
+						return
+					}
+					fmt.Fprintf(os.Stderr, "Error tailing %s: %v. Retrying in 10 seconds...\n", filePath, err)
+				}
+				lastRsyncExecutionTimeValid.WithLabelValues(jobName).Set(0)
+
+				select {
+				case <-watchCtx.Done():
+					return
+				case <-time.After(10 * time.Second):
+				}
+			}
+		}()
+	}
+
+	// Initial scan
+	paths, err := scanLogDir(dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Initial directory scan failed: %v\n", err)
+	} else {
+		for _, p := range paths {
+			startWatcher(p)
+		}
+	}
+
+	if len(paths) == 0 {
+		fmt.Printf("No .log files found in %s yet, will rescan...\n", dir)
+	}
+
+	// Periodic rescan
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			mu.Lock()
+			for _, w := range watchers {
+				w.cancel()
+			}
+			mu.Unlock()
+			return
+		case <-ticker.C:
+			paths, err := scanLogDir(dir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Directory rescan failed: %v\n", err)
+				continue
+			}
+
+			currentPaths := make(map[string]bool)
+			for _, p := range paths {
+				currentPaths[p] = true
+			}
+
+			mu.Lock()
+			// Start watchers for new files
+			for _, p := range paths {
+				if _, exists := watchers[p]; !exists {
+					fmt.Printf("Discovered new log file: %s\n", p)
+					mu.Unlock()
+					startWatcher(p)
+					mu.Lock()
+				}
+			}
+
+			// Clean up watchers for removed files
+			for p, w := range watchers {
+				if !currentPaths[p] {
+					fmt.Printf("Log file removed: %s, stopping watcher\n", p)
+					jobName := jobNameFromPath(p)
+					w.cancel()
+					bytesSentGauge.DeleteLabelValues(jobName)
+					bytesReceivedGauge.DeleteLabelValues(jobName)
+					totalSizeGauge.DeleteLabelValues(jobName)
+					lastRsyncExecutionTime.DeleteLabelValues(jobName)
+					lastRsyncExecutionTimeValid.DeleteLabelValues(jobName)
+				}
+			}
+			mu.Unlock()
+		}
+	}
+}
+
+// tailSingleFile runs a single-file tail loop with retry, used in legacy mode.
+func tailSingleFile(ctx context.Context, filePath string, jobName string) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		if err := tailLogFile(ctx, filePath, jobName, false); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "Error tailing log: %v. Retrying in 10 seconds...\n", err)
+		}
+		lastRsyncExecutionTimeValid.WithLabelValues(jobName).Set(0)
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(10 * time.Second):
+		}
+	}
+}
+
 func main() {
 	fmt.Println("Rsync Exporter starting...")
-
-	fmt.Printf("Watching rsync log at %s\n", rsyncFilePath)
-	fmt.Printf("Serving metrics on port %d\n", port)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -410,29 +577,16 @@ func main() {
 
 	go setupHTTPListener(ctx, httpErrCh)
 
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-
-			if err := tailLogFile(ctx, rsyncFilePath); err != nil {
-				if errors.Is(err, context.Canceled) {
-					return
-				}
-				fmt.Fprintf(os.Stderr, "Error tailing log: %v. Retrying in 10 seconds...\n", err)
-			}
-			lastRsyncExecutionTimeValid.Set(0)
-
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(10 * time.Second):
-			}
-		}
-	}()
+	if rsyncLogDir != "" {
+		fmt.Printf("Watching log directory: %s\n", rsyncLogDir)
+		fmt.Printf("Serving metrics on port %d\n", port)
+		go watchDirectory(ctx, rsyncLogDir)
+	} else {
+		jobName := jobNameFromPath(rsyncFilePath)
+		fmt.Printf("Watching rsync log at %s (job: %s)\n", rsyncFilePath, jobName)
+		fmt.Printf("Serving metrics on port %d\n", port)
+		go tailSingleFile(ctx, rsyncFilePath, jobName)
+	}
 
 	// Wait for shutdown signal or HTTP error
 	select {
