@@ -82,12 +82,17 @@ var (
 
 	lastRsyncExecutionTime = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rsync_last_sync",
-		Help: "Last rsync sync time",
+		Help: "Time of the last rsync attempt (success or failure)",
 	}, []string{"rsync_job"})
 
 	lastRsyncExecutionTimeValid = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rsync_last_sync_valid",
 		Help: "Indicates if the last rsync sync time is valid",
+	}, []string{"rsync_job"})
+
+	lastRsyncExitCode = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rsync_last_exit_code",
+		Help: "Exit code of the most recent rsync run (0 or 24 = success)",
 	}, []string{"rsync_job"})
 )
 
@@ -189,6 +194,36 @@ func setupHTTPListener(ctx context.Context, errCh chan<- error) {
 func parseLogLine(logLine string, jobName string) {
 	tokens := strings.Fields(logLine)
 	if len(tokens) == 0 {
+		return
+	}
+
+	// Exit-code sentinel written by rsync-job as the final log line:
+	// "rsync-exit-code: N". This is the authoritative success/failure signal.
+	// Being the last line, it overrides any transient valid=1 set by an earlier
+	// "total size is 0" summary from a job that still failed.
+	if tokens[0] == "rsync-exit-code:" {
+		if len(tokens) < 2 {
+			return
+		}
+
+		code, err := strconv.Atoi(tokens[1])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error parsing rsync exit code: %v\n", err)
+			return
+		}
+
+		debugf("[%s] Exit code: %d\n", jobName, code)
+		lastRsyncExitCode.WithLabelValues(jobName).Set(float64(code))
+
+		// Stamp every completed run as an attempt so staleness reflects "last attempt".
+		lastRsyncExecutionTime.WithLabelValues(jobName).Set(float64(time.Now().Unix()))
+
+		// Exit code 24 = "vanished files" — normal for live Docker volumes.
+		if code == 0 || code == 24 {
+			lastRsyncExecutionTimeValid.WithLabelValues(jobName).Set(1)
+		} else {
+			lastRsyncExecutionTimeValid.WithLabelValues(jobName).Set(0)
+		}
 		return
 	}
 
@@ -530,6 +565,7 @@ func watchDirectory(ctx context.Context, dir string) {
 					totalSizeGauge.DeleteLabelValues(jobName)
 					lastRsyncExecutionTime.DeleteLabelValues(jobName)
 					lastRsyncExecutionTimeValid.DeleteLabelValues(jobName)
+					lastRsyncExitCode.DeleteLabelValues(jobName)
 				}
 			}
 			mu.Unlock()
