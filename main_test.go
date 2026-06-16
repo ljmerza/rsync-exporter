@@ -97,6 +97,68 @@ func TestParseLogLineTotalSizeInvalid(t *testing.T) {
 	}
 }
 
+func TestParseLogLineExitCodeSuccess(t *testing.T) {
+	lastRsyncExecutionTime.WithLabelValues("test_job").Set(0)
+	lastRsyncExecutionTimeValid.WithLabelValues("test_job").Set(0)
+	lastRsyncExitCode.WithLabelValues("test_job").Set(-1)
+
+	before := float64(time.Now().Unix())
+	parseLogLine("rsync-exit-code: 0", "test_job")
+	after := float64(time.Now().Unix())
+
+	valid := testutil.ToFloat64(lastRsyncExecutionTimeValid.WithLabelValues("test_job"))
+	if valid != 1 {
+		t.Fatalf("lastRsyncExecutionTimeValid = %f, want 1 after exit code 0", valid)
+	}
+
+	code := testutil.ToFloat64(lastRsyncExitCode.WithLabelValues("test_job"))
+	if code != 0 {
+		t.Fatalf("lastRsyncExitCode = %f, want 0", code)
+	}
+
+	lastSync := testutil.ToFloat64(lastRsyncExecutionTime.WithLabelValues("test_job"))
+	if lastSync < before || lastSync > after+1 {
+		t.Fatalf("last sync timestamp %f outside expected range [%f, %f]", lastSync, before, after+1)
+	}
+}
+
+func TestParseLogLineExitCode24(t *testing.T) {
+	lastRsyncExecutionTimeValid.WithLabelValues("test_job").Set(0)
+	lastRsyncExitCode.WithLabelValues("test_job").Set(0)
+
+	parseLogLine("rsync-exit-code: 24", "test_job")
+
+	valid := testutil.ToFloat64(lastRsyncExecutionTimeValid.WithLabelValues("test_job"))
+	if valid != 1 {
+		t.Fatalf("lastRsyncExecutionTimeValid = %f, want 1 after exit code 24", valid)
+	}
+
+	code := testutil.ToFloat64(lastRsyncExitCode.WithLabelValues("test_job"))
+	if code != 24 {
+		t.Fatalf("lastRsyncExitCode = %f, want 24", code)
+	}
+}
+
+// TestParseLogLineExitCodeFailure reproduces the false-positive case: a job that
+// printed "total size is 0" (setting valid=1) but then failed. The trailing
+// exit-code sentinel must override valid back to 0.
+func TestParseLogLineExitCodeFailure(t *testing.T) {
+	lastRsyncExecutionTimeValid.WithLabelValues("test_job").Set(1)
+	lastRsyncExitCode.WithLabelValues("test_job").Set(0)
+
+	parseLogLine("rsync-exit-code: 23", "test_job")
+
+	valid := testutil.ToFloat64(lastRsyncExecutionTimeValid.WithLabelValues("test_job"))
+	if valid != 0 {
+		t.Fatalf("lastRsyncExecutionTimeValid = %f, want 0 after non-zero exit code", valid)
+	}
+
+	code := testutil.ToFloat64(lastRsyncExitCode.WithLabelValues("test_job"))
+	if code != 23 {
+		t.Fatalf("lastRsyncExitCode = %f, want 23", code)
+	}
+}
+
 func TestParseBytesTokenNegative(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -21,11 +21,19 @@ LOG_FILE="${LOG_DIR}/${JOB_NAME}.log"
 
 # Overwrite (>) so the exporter detects truncation and re-reads fresh stats.
 # Using --stats without -v keeps output to ~15 lines (just the summary).
+# Disable errexit around rsync so we capture its exit code even on failure.
+set +e
 rsync --stats "$@" > "$LOG_FILE" 2>&1
 EXIT_CODE=$?
+set -e
+
+# Append a machine-readable sentinel as the final log line. The rsync-exporter
+# parses this to set rsync_last_sync_valid from the real exit code, so hard
+# failures (which print no --stats summary) are still recorded as failures.
+printf 'rsync-exit-code: %d\n' "$EXIT_CODE" >> "$LOG_FILE"
 
 # Exit code 24 = "vanished files" — normal for live Docker volumes
-if [ $EXIT_CODE -ne 0 ] && [ $EXIT_CODE -ne 24 ]; then
+if [ "$EXIT_CODE" -ne 0 ] && [ "$EXIT_CODE" -ne 24 ]; then
     echo "rsync-job ${JOB_NAME} failed with exit code ${EXIT_CODE}" >&2
-    exit $EXIT_CODE
+    exit "$EXIT_CODE"
 fi
