@@ -71,3 +71,9 @@ groups:
           summary: "Rsync sync is stale"
           description: "The last rsync sync is more than 24 hours old."
 ```
+
+---
+
+Enjoy my work? Help me out for a couple of :beers: or a :coffee:!
+
+<a href="https://www.buymeacoffee.com/JMISm06AD"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="41" width="174"></a>
