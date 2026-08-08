@@ -1,5 +1,16 @@
 # Overview
 
+<p align="center">
+<img src="https://img.shields.io/github/stars/ljmerza/rsync-exporter?style=for-the-badge&label=Stars&color=orange" alt="Stars">
+<a href="https://github.com/ljmerza/rsync-exporter/releases/latest"><img src="https://img.shields.io/github/v/release/ljmerza/rsync-exporter?style=for-the-badge&color=purple" alt="Version"></a>
+<a href="https://github.com/ljmerza/rsync-exporter/actions/workflows/deploy.yml"><img src="https://img.shields.io/github/actions/workflow/status/ljmerza/rsync-exporter/deploy.yml?style=for-the-badge&label=Build" alt="Build"></a>
+<a href="https://github.com/ljmerza/rsync-exporter/blob/master/LICENSE"><img src="https://img.shields.io/github/license/ljmerza/rsync-exporter?style=for-the-badge&label=License&color=green" alt="License"></a>
+</p>
+
+<p align="center">
+<a href="https://www.buymeacoffee.com/JMISm06AD"><img src="https://img.shields.io/badge/Buy%20Me%20A%20Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee"></a>
+</p>
+
 ### Description
 rsync metrics exporter for **Prometheus.io**
 
@@ -71,9 +82,3 @@ groups:
           summary: "Rsync sync is stale"
           description: "The last rsync sync is more than 24 hours old."
 ```
-
----
-
-Enjoy my work? Help me out for a couple of :beers: or a :coffee:!
-
-<a href="https://www.buymeacoffee.com/JMISm06AD"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="41" width="174"></a>
